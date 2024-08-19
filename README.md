@@ -57,4 +57,3 @@ so if the bot takes more than that to respond, the interaction will fail.
 
    That being said, the bot can't handle large repositories with many commits
 and can't even pull because it can take more than 3 seconds
-
