@@ -18,13 +18,17 @@ This is a discord bot that shows the last 24 hours Git commits of a repository.
 
    Just rename the `.env.sample` file to `.env` and fill the variables with the correct values (you can get all the values from the [Discord Developer Portal](https://discord.com/developers/applications))
 
-4. **Register the commands**
+4. **Clone your repositories**
+
+   The bot will search for the repositories in the `repos` folder, so clone your repositories there and make sure to map those repositories in the `repos` const in the [app.js](app.js) file
+
+5. **Register the commands**
 
    ```bash
    npm run register
    ```
 
-5. **Start the bot**
+6. **Start the bot**
 
    ```bash
    npm run start
@@ -35,26 +39,22 @@ This is a discord bot that shows the last 24 hours Git commits of a repository.
 ## Commands
 
 ```bash
-/dailyfrom <repository> <branch> <date>
+/daily-report <repository>
 ```
 
-- **repository:** The repository name
+- **repository:** Select a repository from the list
 
-  - The repository must be set in the `.repositories.json` file
-  - If it's a private repository, you must set the `token` key in the `.repositories.json` file, e.g.:
+  - The repository must be cloned in the same directory as the bot (the bot will search for the repository in the `repos` folder)
 
-    ```json
-    {
-      "repository": {
-        "url": "your-repository",
-        "token": "access-token"
-      }
-    }
-    ```
+- **branch:** For now the bot only supports the `dev` branch
 
-  - At this point this is just written by copilot so, this is not a real thing and i'll probably do this in some other way like `.env` file or something like that
+## Bugs
 
-- **branch:** The branch name (default: dev)
-- **date:** The date to show the commits (default: last 24 hours)
-  - Format: YYYY-MM-DD
-  - If you input a date, the bot will show the commits from that date (00:00:00) to the end of the day (23:59:59)
+- Response time
+
+   The discord API has a 3 seconds timeout for the interaction response,
+so if the bot takes more than that to respond, the interaction will fail.
+
+   That being said, the bot can't handle large repositories with many commits
+and can't even pull because it can take more than 3 seconds
+

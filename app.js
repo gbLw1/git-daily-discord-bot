@@ -4,27 +4,30 @@ import {
   InteractionType,
   InteractionResponseType,
   verifyKeyMiddleware,
+  MessageComponentTypes,
+  ButtonStyleTypes,
 } from "discord-interactions";
+import { simpleGit } from "simple-git";
+import moment from "moment";
 
-// Create an express app
 const app = express();
-// Get port, or default to 3000
 const PORT = process.env.PORT || 3000;
 
-/**
- * Interactions endpoint URL where Discord will send HTTP requests
- * Parse request body and verifies incoming requests using discord-interactions package
- */
+// List of repositories to get daily reports from
+// make sure the repository is cloned in the same directory as this app
+const repos = [
+  {
+    name: "MyProject",
+    url: "./repos/MyRepoFolder",
+  },
+];
+
 app.post(
   "/interactions",
   verifyKeyMiddleware(process.env.PUBLIC_KEY),
   async function (req, res) {
-    // Interaction type and data
     const { type, data } = req.body;
 
-    /**
-     * Handle verification requests
-     */
     if (type === InteractionType.PING) {
       return res.send({ type: InteractionResponseType.PONG });
     }
@@ -36,8 +39,7 @@ app.post(
     if (type === InteractionType.APPLICATION_COMMAND) {
       const { name } = data;
 
-      // "dailyfrom" command
-      if (name === "dailyfrom") {
+      if (name === "daily-report") {
         const context = req.body.context;
         const userId =
           context === 0 ? req.body.member.user.id : req.body.user.id;
@@ -45,7 +47,18 @@ app.post(
         return res.send({
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
           data: {
-            content: `Hello <@${userId}>!`,
+            content: `Hello <@${userId}>, select a repository to get the daily report from`,
+            components: [
+              {
+                type: MessageComponentTypes.ACTION_ROW,
+                components: repos.map((repo) => ({
+                  type: MessageComponentTypes.BUTTON,
+                  label: repo.name,
+                  style: ButtonStyleTypes.PRIMARY,
+                  custom_id: repo.name,
+                })),
+              },
+            ],
           },
         });
       }
@@ -54,27 +67,89 @@ app.post(
       return res.status(400).json({ error: "unknown command" });
     }
 
+    // Handle message component interactions
+    if (type === InteractionType.MESSAGE_COMPONENT) {
+      const { custom_id } = data;
+
+      const repo = repos.find((repo) => repo.name === custom_id);
+      if (!repo) {
+        return res.status(400).json({ error: "unknown repository" });
+      }
+
+      const git = simpleGit(repo.url);
+      const branches = await git.branchLocal();
+
+      // if (branches.current !== "dev") {
+      //   await git.checkout("dev", (err, update) => {
+      //     if (err) {
+      //       console.error('error checking out "dev" branch', err);
+      //     }
+      //     console.log('checked out "dev" branch', update);
+      //   });
+      // }
+
+      // await git.pull((err, update) => {
+      //   if (err) {
+      //     console.error("error pulling", err);
+      //   }
+      //   console.log("pulled", update);
+      // });
+
+      // TODO: find a way to pull before getting logs
+      // the discord api has a 3 second timeout for responses
+      // and pulling can take longer than that
+
+      const logs = await git.log({
+        // maxCount: 30,
+        "--since": "24 hours ago",
+      });
+
+      if (logs.all.length === 0) {
+        return res.send({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: {
+            content: `No logs found in the last 24 hours for ${repo.name}`,
+          },
+        });
+      }
+
+      // distinct by author_name
+      const logsByAuthor = logs.all.reduce((acc, log) => {
+        if (!acc[log.author_name]) {
+          acc[log.author_name] = [];
+        }
+
+        acc[log.author_name].push(log);
+        return acc;
+      }, {});
+
+      const formattedMessage = `
+            # Daily - ${repo.name} (*branch: ${branches.current}*)
+    
+            ${Object.keys(logsByAuthor)
+              .map((author) => {
+                return `## ${author}\n${logsByAuthor[author]
+                  .map((log) => {
+                    return `\t- ** ${moment(log.date).format("DD/MM/YY HH:mm:ss")}**: ${log.message}`;
+                  })
+                  .join("\n")}`;
+              })
+              .join("\n")}
+            `;
+
+      return res.send({
+        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+        data: {
+          content: formattedMessage,
+        },
+      });
+    }
+
     console.error("unknown interaction type", type);
     return res.status(400).json({ error: "unknown interaction type" });
-  }
+  },
 );
 
 app.listen(PORT, () => {
   console.log("Listening on port", PORT);
-
-  console.log("My commands:");
-  console.log(
-    "GET https://discord.com/api/v10/applications/${process.env.APP_ID}/commands"
-  );
-  fetch(
-    `https://discord.com/api/v10/applications/${process.env.APP_ID}/commands`,
-    {
-      headers: {
-        Authorization: `Bot ${process.env.DISCORD_TOKEN}`,
-      },
-    },
-    { method: "GET" }
-  )
-    .then((res) => res.json())
-    .then(console.log);
 });
