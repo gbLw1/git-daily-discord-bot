@@ -9,15 +9,10 @@ import {
 } from "discord-interactions";
 import { simpleGit } from "simple-git";
 import moment from "moment";
+import { repos } from "./repos.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// List of repositories to get daily reports from
-// make sure the repository is cloned in the same directory as this app
-const repos = [
-    { name: "MyProject", url: "./repos/MyProject" },
-];
 
 let selectedRepo = null;
 
