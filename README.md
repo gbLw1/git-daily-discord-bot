@@ -48,12 +48,3 @@ This is a discord bot that shows the last 24 hours Git commits of a repository.
 
 - **branch:** For now the bot only supports the `dev` branch
 
-## Bugs
-
-- Response time
-
-   The discord API has a 3 seconds timeout for the interaction response,
-so if the bot takes more than that to respond, the interaction will fail.
-
-   That being said, the bot can't handle large repositories with many commits
-and can't even pull because it can take more than 3 seconds
