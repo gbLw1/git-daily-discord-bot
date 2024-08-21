@@ -20,7 +20,7 @@ This is a discord bot that shows the last 24 hours Git commits of a repository.
 
 4. **Clone your repositories**
 
-   The bot will search for the repositories in the `repos` folder, so clone your repositories there and make sure to map those repositories in the `repos` const in the [app.js](app.js) file
+   The bot will search for the repositories in the `repos` folder, so clone your repositories there and make sure to map those repositories correctly in the `repos` const in the [app.js](app.js) file
 
 5. **Register the commands**
 
@@ -46,5 +46,5 @@ This is a discord bot that shows the last 24 hours Git commits of a repository.
 
   - The repository must be cloned in the same directory as the bot (the bot will search for the repository in the `repos` folder)
 
-- **branch:** For now the bot only supports the `dev` branch
+- **branch:** Select a branch from the list
 
