@@ -16,6 +16,42 @@ const PORT = process.env.PORT || 3000;
 
 let selectedRepo = null;
 
+async function getRepoUrl(git) {
+  if (!selectedRepo) {
+    return undefined;
+  }
+
+  try {
+    // Obtenha a URL remota configurada para 'origin'
+    const config = await git.getConfig("remote.origin.url");
+    let remoteUrl = config.value;
+
+    if (remoteUrl.startsWith("git@")) {
+      if (remoteUrl.includes("ssh.dev.azure.com")) {
+        // SSH Azure DevOps
+        remoteUrl = remoteUrl
+          .replace("git@ssh.dev.azure.com:v3/", "https://dev.azure.com/")
+          .replace(".git", "");
+      } else {
+        // others SSH (GitHub, GitLab, Bitbucket, etc)
+        remoteUrl = remoteUrl
+          .replace(":", "/")
+          .replace(/^git@[^:]+:/, "https://")
+          .replace(".git", "");
+      }
+    } else if (remoteUrl.startsWith("https://")) {
+      // HTTPS
+      remoteUrl = remoteUrl.replace(".git", "");
+    }
+
+    console.log(`Repository URL: ${remoteUrl}`);
+    return remoteUrl;
+  } catch (err) {
+    console.error("Failed to get repository URL:", err);
+    return undefined;
+  }
+}
+
 function updateOriginalMessage(token, args) {
   return fetch(
     `https://discord.com/api/v10/webhooks/${process.env.APP_ID}/${token}/messages/@original`,
@@ -94,22 +130,12 @@ app.post(
         });
 
         const git = simpleGit(repo.url);
-        await git.fetch(["--all"]);
-        const branches = await git.branch(["-a"]);
-        const remoteBranches = branches.all.filter((b) =>
-          b.includes("remotes/origin/"),
-        );
-        const localBranches = branches.all.filter(
-          (b) => !b.includes("remotes/"),
-        );
+        await git.fetch(["--prune"]);
+        const branches = await git.branch(["-r"]);
 
-        // all branches (removing duplicates)
-        const branchButtons = [
-          ...localBranches,
-          ...remoteBranches.map((b) => b.replace("remotes/origin/", "")),
-        ].filter((branch, index, self) => self.indexOf(branch) === index);
+        const allBranches = branches.all.map((b) => b.replace("origin/", ""));
 
-        if (branchButtons.length === 0) {
+        if (allBranches.length === 0) {
           await updateOriginalMessage(req.body.token, {
             content: `No branches found in the repository ${repo.name}`,
           });
@@ -127,7 +153,7 @@ app.post(
                   type: MessageComponentTypes.STRING_SELECT,
                   placeholder: "Select a branch",
                   custom_id: "branch_",
-                  options: branchButtons.map((branch) => ({
+                  options: allBranches.map((branch) => ({
                     label: branch,
                     value: branch,
                   })),
@@ -154,34 +180,27 @@ app.post(
 
         const git = simpleGit(selectedRepo.url);
 
-        // List all branches (local and remote)
         const branches = await git.branch(["-a"]);
-
         const localBranches = branches.all.filter(
-          (b) => !b.includes("remotes/"),
+          (b) => !b.startsWith("remotes/origin/"),
         );
-        const remoteBranches = branches.all.filter((b) =>
-          b.includes("remotes/origin/"),
-        );
+        const remoteBranches = branches.all
+          .filter((b) => b.startsWith("remotes/origin/"))
+          .map((b) => b.replace("remotes/", ""))
+          .filter((b) => b !== "origin/HEAD")
+          .filter((b) => !localBranches.includes(b.replace("origin/", "")));
 
-        const branchExistsLocally = localBranches.includes(branchName);
-        const branchExistsRemotely = remoteBranches.includes(
-          `remotes/origin/${branchName}`,
-        );
+        console.log("branches:", [...localBranches, ...remoteBranches]);
 
-        if (!branchExistsLocally && !branchExistsRemotely) {
-          updateOriginalMessage(req.body.token, {
-            content: `The branch "${branchName}" does not exist in the repository ${selectedRepo.name}`,
-          });
-          return;
+        if (branches.current !== branchName) {
+          if (!localBranches.includes(branchName)) {
+            await git.checkout(["-b", branchName, `origin/${branchName}`]);
+          } else {
+            await git.checkout(branchName);
+          }
         }
 
-        if (!branchExistsLocally && branchExistsRemotely) {
-          await git.checkout(["-b", branchName, `origin/${branchName}`]);
-        } else if (branchExistsLocally) {
-          await git.checkout(branchName);
-        }
-
+        console.log("start pulling", branches.current, branchName);
         try {
           await git.pull();
         } catch (err) {
@@ -194,6 +213,7 @@ app.post(
         const logs = await git.log({
           "--since": "24 hours ago",
         });
+        console.log("logs", logs.total);
 
         let formattedMessage;
 
@@ -204,6 +224,12 @@ app.post(
             if (!acc[log.author_name]) {
               acc[log.author_name] = [];
             }
+
+            // limit to 5 logs per author
+            // if (acc[log.author_name].length >= 5) {
+            //   return acc;
+            // }
+
             acc[log.author_name].push(log);
             return acc;
           }, {});
@@ -215,12 +241,22 @@ app.post(
               .map((author) => {
                 return `## ${author}\n${logsByAuthor[author]
                   .map((log) => {
-                    return `\t- ** ${moment(log.date).format("DD/MM/YY HH:mm:ss")}**: ${log.message}`;
+                    return `\t- ** ${moment(log.date).format("DD/MM HH:mm")}**: ${log.message.length > 50 ? log.message.slice(0, 50) + "..." : log.message}`;
                   })
                   .join("\n")}`;
               })
               .join("\n")}
           `;
+        }
+
+        const charLimit = 1900;
+        if (formattedMessage.length > charLimit) {
+          const repoUrl = await getRepoUrl(git);
+          if (repoUrl) {
+            formattedMessage = `${formattedMessage.slice(0, charLimit)}\n[See More](${repoUrl})`;
+          } else {
+            formattedMessage = `${formattedMessage.slice(0, charLimit)}\n\n*The full report is too long to display here*`;
+          }
         }
 
         // Edit the original response with the actual content
