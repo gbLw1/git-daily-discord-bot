@@ -16,11 +16,26 @@ const PORT = process.env.PORT || 3000;
 // List of repositories to get daily reports from
 // make sure the repository is cloned in the same directory as this app
 const repos = [
-  {
-    name: "MyProject",
-    url: "./repos/MyRepoFolder",
-  },
+    { name: "MyProject", url: "./repos/MyProject" },
 ];
+
+let selectedRepo = null;
+
+function updateOriginalMessage(token, args) {
+  return fetch(
+    `https://discord.com/api/v10/webhooks/${process.env.APP_ID}/${token}/messages/@original`,
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        content: args.content,
+        components: args.components,
+      }),
+    },
+  );
+}
 
 app.post(
   "/interactions",
@@ -51,7 +66,7 @@ app.post(
                   type: MessageComponentTypes.BUTTON,
                   label: repo.name,
                   style: ButtonStyleTypes.PRIMARY,
-                  custom_id: repo.name,
+                  custom_id: `repo_${repo.name}`,
                 })),
               },
             ],
@@ -64,78 +79,165 @@ app.post(
     }
 
     if (type === InteractionType.MESSAGE_COMPONENT) {
-      const { custom_id } = data;
-      const repo = repos.find((repo) => repo.name === custom_id);
+      const { custom_id, values } = data;
 
-      if (!repo) {
-        console.error("unknown repository");
-        return res.status(400).json({ error: "unknown repository" });
+      // SELECTED REPO
+      if (custom_id.startsWith("repo_")) {
+        const repoName = custom_id.replace("repo_", "");
+        const repo = repos.find((repo) => repo.name === repoName);
+
+        if (!repo) {
+          console.error("unknown repository");
+          return res.status(400).json({ error: "unknown repository" });
+        }
+
+        selectedRepo = repo;
+
+        // Start loading
+        res.send({
+          type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+        });
+
+        const git = simpleGit(repo.url);
+        await git.fetch(["--all"]);
+        const branches = await git.branch(["-a"]);
+        const remoteBranches = branches.all.filter((b) =>
+          b.includes("remotes/origin/"),
+        );
+        const localBranches = branches.all.filter(
+          (b) => !b.includes("remotes/"),
+        );
+
+        // all branches (removing duplicates)
+        const branchButtons = [
+          ...localBranches,
+          ...remoteBranches.map((b) => b.replace("remotes/origin/", "")),
+        ].filter((branch, index, self) => self.indexOf(branch) === index);
+
+        if (branchButtons.length === 0) {
+          await updateOriginalMessage(req.body.token, {
+            content: `No branches found in the repository ${repo.name}`,
+          });
+
+          return;
+        }
+
+        await updateOriginalMessage(req.body.token, {
+          content: `Select a branch to get the daily report from`,
+          components: [
+            {
+              type: MessageComponentTypes.ACTION_ROW,
+              components: [
+                {
+                  type: MessageComponentTypes.STRING_SELECT,
+                  placeholder: "Select a branch",
+                  custom_id: "branch_",
+                  options: branchButtons.map((branch) => ({
+                    label: branch,
+                    value: branch,
+                  })),
+                },
+              ],
+            },
+          ],
+        });
+
+        return;
       }
 
-      // Send an initial response immediately
-      res.send({
-        type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
-      });
+      // SELECTED BRANCH
+      if (custom_id.startsWith("branch_")) {
+        const branchName = values[0];
+        if (!selectedRepo) {
+          return res.status(400).json({ error: "no repository selected" });
+        }
 
-      const git = simpleGit(repo.url);
-      const branches = await git.branchLocal();
+        // Send an initial response immediately (kind of a "loading" message)
+        res.send({
+          type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+        });
 
-      await git.checkout("dev");
-      await git.pull();
+        const git = simpleGit(selectedRepo.url);
 
-      const logs = await git.log({
-        // maxCount: 10,
-        "--since": "24 hours ago",
-      });
+        // List all branches (local and remote)
+        const branches = await git.branch(["-a"]);
 
-      let formattedMessage;
+        const localBranches = branches.all.filter(
+          (b) => !b.includes("remotes/"),
+        );
+        const remoteBranches = branches.all.filter((b) =>
+          b.includes("remotes/origin/"),
+        );
 
-      if (logs.all.length === 0) {
-        formattedMessage = `No logs found in the last 24 hours for ${repo.name}`;
-      } else {
-        const logsByAuthor = logs.all.reduce((acc, log) => {
-          if (!acc[log.author_name]) {
-            acc[log.author_name] = [];
-          }
-          acc[log.author_name].push(log);
-          return acc;
-        }, {});
+        const branchExistsLocally = localBranches.includes(branchName);
+        const branchExistsRemotely = remoteBranches.includes(
+          `remotes/origin/${branchName}`,
+        );
 
-        formattedMessage = `
-          # Daily - ${repo.name} (*branch: ${branches.current}*)
-  
-          ${Object.keys(logsByAuthor)
-            .map((author) => {
-              return `## ${author}\n${logsByAuthor[author]
-                .map((log) => {
-                  return `\t- ** ${moment(log.date).format(
-                    "DD/MM/YY HH:mm:ss",
-                  )}**: ${log.message}`;
-                })
-                .join("\n")}`;
-            })
-            .join("\n")}
-        `;
+        if (!branchExistsLocally && !branchExistsRemotely) {
+          updateOriginalMessage(req.body.token, {
+            content: `The branch "${branchName}" does not exist in the repository ${selectedRepo.name}`,
+          });
+          return;
+        }
+
+        if (!branchExistsLocally && branchExistsRemotely) {
+          await git.checkout(["-b", branchName, `origin/${branchName}`]);
+        } else if (branchExistsLocally) {
+          await git.checkout(branchName);
+        }
+
+        try {
+          await git.pull();
+        } catch (err) {
+          await updateOriginalMessage(req.body.token, {
+            content: `Failed to pull the latest changes for the branch *${branchName}*. Error: ${err.message}`,
+          });
+          return;
+        }
+
+        const logs = await git.log({
+          "--since": "24 hours ago",
+        });
+
+        let formattedMessage;
+
+        if (logs.all.length === 0) {
+          formattedMessage = `No logs found in the last 24 hours for **${selectedRepo.name}** on branch *${branchName}*`;
+        } else {
+          const logsByAuthor = logs.all.reduce((acc, log) => {
+            if (!acc[log.author_name]) {
+              acc[log.author_name] = [];
+            }
+            acc[log.author_name].push(log);
+            return acc;
+          }, {});
+
+          formattedMessage = `
+            # Daily - ${selectedRepo.name} (branch: *${branchName}*)
+    
+            ${Object.keys(logsByAuthor)
+              .map((author) => {
+                return `## ${author}\n${logsByAuthor[author]
+                  .map((log) => {
+                    return `\t- ** ${moment(log.date).format("DD/MM/YY HH:mm:ss")}**: ${log.message}`;
+                  })
+                  .join("\n")}`;
+              })
+              .join("\n")}
+          `;
+        }
+
+        // Edit the original response with the actual content
+        await updateOriginalMessage(req.body.token, {
+          content: formattedMessage,
+        });
+        selectedRepo = null;
+        return;
       }
-
-      // Edit the original response with the actual content
-      await fetch(
-        `https://discord.com/api/v10/webhooks/${process.env.APP_ID}/${req.body.token}/messages/@original`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            content: formattedMessage,
-          }),
-        },
-      );
-
-      return; // Ensure the function ends here and doesn't try to send another response
     }
 
-    console.error("unknown interaction type", type);
+    console.error("unknown interaction type", type, data);
   },
 );
 
